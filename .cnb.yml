@@ -1,0 +1,17 @@
+main:
+  push:
+    - name: shellcheck
+      docker:
+        image: alpine:3.20
+      stages:
+        - name: ShellCheck 语法校验
+          script:
+            - apk add --no-cache shellcheck findutils
+            - |
+              set -e
+              files="$(find . -path ./.git -prune -o \( -name '*.sh' -o -path './bin/*' \) -type f -print)"
+              if [ -z "${files}" ]; then
+                echo "No shell scripts to check."
+                exit 0
+              fi
+              printf '%s\n' "${files}" | xargs shellcheck -S error

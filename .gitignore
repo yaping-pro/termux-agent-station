@@ -1,0 +1,25 @@
+# OS / editor
+.DS_Store
+*.swp
+*~
+
+# Logs
+*.log
+
+# Secrets / local env
+.env
+.env.*
+*.key
+*.pem
+
+# Local overrides
+local/
+local.*
+
+# Backup files produced by bin/setup.sh
+*.bak.*
+
+# CI / build artifacts
+.cnb/
+node_modules/
+dist/

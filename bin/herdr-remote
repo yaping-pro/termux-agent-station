@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# herdr-remote: Low-latency persistent SSH wrapper for remote Herdr workstations
+# Part of termux-agent-station (https://github.com/stevenma/termux-agent-station)
+# ==============================================================================
+
+set -uo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/termux-agent-station"
+CONFIG_FILE="$CONFIG_DIR/config.env"
+
+# Terminal color helpers
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+print_banner() {
+    echo -e "${CYAN}${BOLD}==> Herdr Mobile Remote Session <==${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}[INFO]${NC} $*"
+}
+
+print_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $*"
+}
+
+print_err() {
+    echo -e "${RED}[ERROR]${NC} $*" >&2
+}
+
+show_help() {
+    cat <<EOF
+Usage: herdr-remote [OPTIONS] [HOST]
+
+Connect to remote AI coding workstation and attach to Herdr session.
+
+Arguments:
+  HOST                      Target remote host (e.g., user@homelab or 100.x.y.z)
+
+Options:
+  -s, --session <name>      Target herdr session name (default: main or HERDR_SESSION)
+  -p, --port <port>         SSH port (default: 22 or from SSH config)
+  -i, --identity <path>     Identity key file (e.g., ~/.ssh/id_ed25519)
+  --once                    Do not auto-reconnect on disconnection
+  -h, --help                Show this help message and exit
+
+Configuration:
+  Settings are loaded from: $CONFIG_FILE
+  Supported env/config variables:
+    HERDR_HOST              Default remote host
+    HERDR_SESSION           Default session name (default: main)
+    HERDR_SSH_PORT          Default SSH port (default: 22)
+    HERDR_IDENTITY          Path to private key
+    HERDR_CUSTOM_CMD        Custom remote command (default: 'herdr --session <session> || herdr')
+
+EOF
+}
+
+# 1. Load config file if present
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+# 2. Parse command-line arguments
+CLI_HOST=""
+CLI_SESSION=""
+CLI_PORT="${HERDR_SSH_PORT:-}"
+CLI_IDENTITY="${HERDR_IDENTITY:-}"
+AUTO_RECONNECT=true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -s|--session)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                CLI_SESSION="$2"
+                shift 2
+            else
+                print_err "Option -s/--session requires an argument."
+                exit 1
+            fi
+            ;;
+        -p|--port)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                CLI_PORT="$2"
+                shift 2
+            else
+                print_err "Option -p/--port requires an argument."
+                exit 1
+            fi
+            ;;
+        -i|--identity)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                CLI_IDENTITY="$2"
+                shift 2
+            else
+                print_err "Option -i/--identity requires an argument."
+                exit 1
+            fi
+            ;;
+        --once)
+            AUTO_RECONNECT=false
+            shift
+            ;;
+        -*)
+            print_err "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+        *)
+            if [[ -z "$CLI_HOST" ]]; then
+                CLI_HOST="$1"
+            else
+                print_err "Unexpected argument: $1"
+                show_help
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# 3. Determine Host
+TARGET_HOST="${CLI_HOST:-${HERDR_HOST:-}}"
+
+if [[ -z "$TARGET_HOST" ]]; then
+    print_banner
+    echo -e "No target host specified."
+    read -r -p "Enter remote workstation (e.g. user@homelab / 100.x.y.z): " INPUT_HOST
+    TARGET_HOST="$INPUT_HOST"
+    if [[ -z "$TARGET_HOST" ]]; then
+        print_err "Host cannot be empty. Exiting."
+        exit 1
+    fi
+    # Offer to save to config
+    read -r -p "Save as default host in $CONFIG_FILE? [y/N]: " SAVE_CONF
+    if [[ "$SAVE_CONF" =~ ^[Yy]$ ]]; then
+        mkdir -p "$CONFIG_DIR"
+        echo "HERDR_HOST=\"$TARGET_HOST\"" >> "$CONFIG_FILE"
+        print_info "Saved default host to $CONFIG_FILE"
+    fi
+fi
+
+# 4. Determine Session & Command
+TARGET_SESSION="${CLI_SESSION:-${HERDR_SESSION:-main}}"
+REMOTE_CMD="${HERDR_CUSTOM_CMD:-herdr --session $TARGET_SESSION || herdr}"
+
+# Build SSH arguments
+SSH_OPTS=(
+    -o "ServerAliveInterval=5"
+    -o "ServerAliveCountMax=3"
+    -o "ConnectTimeout=10"
+    -o "TCPKeepAlive=yes"
+    -o "StrictHostKeyChecking=accept-new"
+)
+
+if [[ -n "$CLI_PORT" ]]; then
+    SSH_OPTS+=(-p "$CLI_PORT")
+fi
+
+if [[ -n "$CLI_IDENTITY" && -f "$CLI_IDENTITY" ]]; then
+    SSH_OPTS+=(-i "$CLI_IDENTITY")
+elif [[ -f "$HOME/.ssh/id_ed25519" ]]; then
+    SSH_OPTS+=(-i "$HOME/.ssh/id_ed25519")
+fi
+
+# Handle wake-lock if inside Termux
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+    print_info "Termux wake-lock acquired."
+fi
+
+# Reconnection loop
+INITIAL_BACKOFF=1
+MAX_BACKOFF=10
+BACKOFF=$INITIAL_BACKOFF
+ATTEMPT=1
+
+cleanup() {
+    echo ""
+    print_info "Session terminated by user."
+    if command -v termux-wake-unlock >/dev/null 2>&1; then
+        termux-wake-unlock
+        print_info "Termux wake-lock released."
+    fi
+    exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+print_banner
+print_info "Host:    ${GREEN}${TARGET_HOST}${NC}"
+print_info "Session: ${GREEN}${TARGET_SESSION}${NC}"
+print_info "Mode:    $(if $AUTO_RECONNECT; then echo -e "${GREEN}Auto-Reconnect Enabled${NC}"; else echo -e "${YELLOW}Single-Shot (--once)${NC}"; fi)"
+echo ""
+
+while true; do
+    START_TIME=$(date +%s)
+    print_info "Connecting to ${TARGET_HOST} (attempt #${ATTEMPT})..."
+    
+    # Run SSH in interactive pseudo-terminal mode
+    ssh -t "${SSH_OPTS[@]}" "$TARGET_HOST" "$REMOTE_CMD"
+    EXIT_CODE=$?
+
+    END_TIME=$(date +%s)
+    DURATION=$((END_TIME - START_TIME))
+
+    if ! $AUTO_RECONNECT; then
+        print_info "SSH exited with code $EXIT_CODE. Exiting."
+        break
+    fi
+
+    # If connection lasted more than 15 seconds, reset backoff
+    if (( DURATION > 15 )); then
+        BACKOFF=$INITIAL_BACKOFF
+        ATTEMPT=1
+    else
+        ATTEMPT=$((ATTEMPT + 1))
+    fi
+
+    # Check for manual disconnect / exit code 0 or 130
+    if [[ $EXIT_CODE -eq 0 ]]; then
+        print_info "Remote session ended normally."
+        read -r -p "Reconnect to $TARGET_HOST? [Y/n]: " RECONN
+        if [[ "$RECONN" =~ ^[Nn]$ ]]; then
+            break
+        fi
+    else
+        print_warn "SSH session dropped (code: $EXIT_CODE, lasted: ${DURATION}s)."
+        print_info "Reconnecting in ${BACKOFF}s... (Press Ctrl+C to abort)"
+        sleep "$BACKOFF"
+        # Exponential backoff up to MAX_BACKOFF
+        BACKOFF=$(( BACKOFF * 2 ))
+        if (( BACKOFF > MAX_BACKOFF )); then
+            BACKOFF=$MAX_BACKOFF
+        fi
+    fi
+done
+
+if command -v termux-wake-unlock >/dev/null 2>&1; then
+    termux-wake-unlock
+fi

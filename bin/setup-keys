@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# setup-keys: Automated SSH key manager for termux-agent-station
+# Part of termux-agent-station (https://github.com/stevenma/termux-agent-station)
+# ==============================================================================
+
+set -euo pipefail
+
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+SSH_DIR="$HOME/.ssh"
+KEY_FILE="$SSH_DIR/id_ed25519"
+PUB_FILE="$KEY_FILE.pub"
+
+print_banner() {
+    echo -e "${CYAN}${BOLD}==> SSH Key Manager for Termux Agent Station <==${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}[INFO]${NC} $*"
+}
+
+print_ok() {
+    echo -e "${GREEN}[OK]${NC} $*"
+}
+
+print_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $*"
+}
+
+print_err() {
+    echo -e "${RED}[ERROR]${NC} $*" >&2
+}
+
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+print_banner
+
+# Step 1: Ensure Ed25519 key exists
+if [[ -f "$KEY_FILE" && -f "$PUB_FILE" ]]; then
+    print_ok "Existing Ed25519 keypair found at $KEY_FILE"
+else
+    print_info "Generating new Ed25519 SSH keypair..."
+    COMMENT="termux-$(uname -m)-$(date +%Y%m%d)"
+    ssh-keygen -t ed25519 -N "" -C "$COMMENT" -f "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+    chmod 644 "$PUB_FILE"
+    print_ok "Generated new SSH keypair: $PUB_FILE"
+fi
+
+PUB_CONTENT=$(cat "$PUB_FILE")
+
+echo ""
+echo -e "${BOLD}Your Public Key (${PUB_FILE}):${NC}"
+echo -e "${GREEN}$PUB_CONTENT${NC}"
+echo ""
+
+# Copy to Android clipboard if termux-clipboard-set is available
+if command -v termux-clipboard-set >/dev/null 2>&1; then
+    echo "$PUB_CONTENT" | termux-clipboard-set
+    print_ok "Public key copied to Android clipboard via termux-clipboard-set."
+fi
+
+# Step 2: Push key to remote host
+TARGET_HOST="${1:-}"
+
+if [[ -z "$TARGET_HOST" ]]; then
+    echo -e "Would you like to deploy this key to a remote host now using ${BOLD}ssh-copy-id${NC}?"
+    read -r -p "Enter remote host (e.g., user@homelab or 100.x.y.z) [or press Enter to skip]: " TARGET_HOST
+fi
+
+if [[ -n "$TARGET_HOST" ]]; then
+    PORT="${2:-22}"
+    print_info "Copying public key to ${TARGET_HOST} (port ${PORT})..."
+    
+    if command -v ssh-copy-id >/dev/null 2>&1; then
+        if ssh-copy-id -i "$PUB_FILE" -p "$PORT" "$TARGET_HOST"; then
+            echo ""
+            print_ok "SSH public key successfully installed on ${TARGET_HOST}!"
+            print_info "You can now test connection with: ssh -p $PORT $TARGET_HOST"
+        else
+            print_err "Failed to copy key automatically via ssh-copy-id."
+            echo ""
+            echo "Please manually append the public key to ~/.ssh/authorized_keys on the remote host:"
+            echo -e "${GREEN}echo '$PUB_CONTENT' >> ~/.ssh/authorized_keys${NC}"
+        fi
+    else
+        print_warn "ssh-copy-id not found. Attempting manual installation via ssh..."
+        if cat "$PUB_FILE" | ssh -p "$PORT" "$TARGET_HOST" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"; then
+            print_ok "SSH public key installed on ${TARGET_HOST} via SSH pipeline!"
+        else
+            print_err "Failed to push key to remote host."
+            echo "Please manually copy the key above into the remote ~/.ssh/authorized_keys file."
+        fi
+    fi
+else
+    print_info "Skipping remote key deployment."
+    echo "To deploy manually to a remote host later, run:"
+    echo -e "  ${BOLD}setup-keys <user@host>${NC}"
+    echo "Or manually add this line to ~/.ssh/authorized_keys on the target machine:"
+    echo -e "  ${GREEN}$PUB_CONTENT${NC}"
+fi
