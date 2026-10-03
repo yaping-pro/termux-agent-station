@@ -31,7 +31,7 @@ Termux already gives you a full Linux userspace on Android. Pair it with **Tails
 | Feature | What it buys you |
 | --- | --- |
 | 🚀 **Sub-5ms WireGuard Latency** | Tailscale P2P means your agent host talks directly to the phone's kernel — no TURN relay, no transcoding. |
-| ⌨️ **Touch-First Extra Keys Matrix** | A two-row key layout tuned for AI agents: `ESC`, `TAB`, `CTRL`, `ALT`, arrows, and popups for `\|`, `_`, `$`, `\``. |
+| ⌨️ **Touch-First Extra Keys Matrix** | Two-row layout tuned for AI agents: `⌨` toggle, `◀`/`▶` (`F7`/`F8`) tab switching, `PG▲`/`PG▼` scrolling, `ESC`/`TAB`/`CTRL`/`ALT` and arrows with popups for `\|`, `_`, `$`, `\``. |
 | 🔄 **Auto-Reconnection & Session Persistence** | `herdr-remote` + `tmux` keep your agent's context alive across sleeps, drops, and Termux restarts. |
 | 🎨 **Ghostty-inspired Modern Dark Theme** | A TokyoNight-derived palette for crisp contrast in `vim`, TUIs, and agent output. |
 | 🛡️ **Network Coexistence** | FlClash / ClashMeta runs next to Tailscale **without root** — your proxy routing and your P2P tunnel never fight. |
@@ -114,35 +114,34 @@ termux-wake-lock
 
 ## Touch Keyboard & Gesture Reference
 
-The extra-keys matrix in `configs/termux.properties` is arranged for agent ergonomics. **Tap** a key for its primary; **long-press** for the popup alternate.
+The extra-keys matrix in `configs/termux.properties` is arranged for agent ergonomics and was **verified on a vivo iQOO (Android 16 / OriginOS, Termux 0.119)**: `◀`/`▶` tab switching, `PG▲`/`PG▼` scrolling, and `⌨` keyboard toggle all confirmed working.
 
-| Key | Long-press popup | Purpose |
-| --- | --- | --- |
-| `ESC` | `FN` | Escape / function layer |
-| `TAB` | `\` | Indent / escape path separators |
-| `CTRL` | `INSERT` | Modifier for copy / paste / shortcuts |
-| `ALT` | `DELETE` | Modifier / quick delete |
-| `UP` | `PGUP` | Scroll / page up |
-| `DOWN` | `PGDN` | Scroll / page down |
-| `ENTER` | `KEYBOARD` | Send newline / toggle soft keyboard |
-| `/` | `\|` | Path separator / pipe |
-| `-` | `_` | Dash / underscore |
-| `~` | `$` | Home dir / variable sigil |
-| `'` | `` ` `` | Quote / backtick |
-| `LEFT` | `HOME` | Move cursor / jump to line start |
-| `RIGHT` | `END` | Move cursor / jump to line end |
-| `DRAWER` | `KEYBOARD` | Open the extra-keys drawer / keyboard |
+**Tap** a key for its primary action; **SWIPE UP** on a key to reveal its popup alternate. (Earlier docs said "long-press" — that is wrong for current Termux; the gesture is a swipe-up.)
+
+| Row | Keys (primary / swipe-up popup) |
+| --- | --- |
+| **Row 1** | `⌨` toggle (popup `DRAWER`) · `◀` = `F7` previous_tab (popup `GOTO`=`F5`) · `▶` = `F8` next_tab (popup `📜`=`F6`) · `PG▲` scroll up · `PG▼` scroll down · `⌫` backspace (popup `CTRL u` Clear) |
+| **Row 2** | `ESC` (popup `CTRL c`) · `TAB` (popup `\`) · `CTRL` (popup `~`) · `ALT` (popup `$`) · `←` (popup `HOME`) · `↓` (popup `PG▼`) · `↑` (popup `PG▲`) · `→` (popup `END`) · `↵` Enter (popup `/`) |
+
+> **⚠️ Macro syntax rules (learned the hard way)**
+> Termux extra-keys macros are unforgiving. The following traps cause keys to silently type themselves out as literal text instead of acting:
+> 1. **SPACE-separated only.** Macros must be written `"CTRL ALT z"`. A `"+"`-joined form like `"ctrl+alt+z"` is invalid and is sent as **literal text**.
+> 2. **`[` and `]` are not named keys.** They cannot carry the `ALT` modifier, so herdr bindings like `ctrl+alt+[` / `ctrl+alt+]` are **unreachable** via macros. Use plain function keys (`F5`/`F6`/`F7`/`F8`) instead — herdr already binds those, no modifier macros needed.
+> 3. **Unknown tokens become literal code points.** `ExtraKeysInfo.java` sends any unrecognized token as a literal string, which is exactly why a bad macro "types itself out." This is also why `PG▲`/`PG▼` must be single-token macros (`"PGUP"`/`"PGDN"`) — plain `"PGUP"`/`"PGDN"` strings and `{"key":"PGUP"}` objects do **not** scroll.
+
+**Herdr bindings required** (so the keys above actually drive the agent): ensure `previous_tab` and `next_tab` include `f7`/`f8`, and `goto` includes `f5` (the row-1 popups). If you wire a zoom key, include `f9` in the zoom binding.
+
+**CJK / Chinese input:** `enforce-char-based-input` must stay `false` — Android IMEs (pinyin/shuangpin) need the composition buffer (`setComposingText`); `true` forces per-character dispatch and breaks Chinese input.
 
 **Gestures (Termux-native):**
 
 | Gesture | Action |
 | --- | --- |
-| Long-press extra key | Reveal the popup alternate |
+| Swipe up on an extra key | Reveal the popup alternate |
 | Tap `DRAWER` / `KEYBOARD` | Show or hide the soft keyboard |
 | Pull down notification shade | Termux tile: *Acquire wakelock*, *Show keyboard* |
 | Pinch on terminal | Zoom font |
 | `Volume Down` + `c` | Custom session shortcut (configurable) |
-
 ---
 
 ## Configuration layout
